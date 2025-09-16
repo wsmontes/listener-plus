@@ -40,6 +40,11 @@
       <button id="copyTranscriptionBtn" disabled>Copiar</button>
       <button id="clearBtn">Limpar</button>
     </div>
+    <div class="setup-row" id="systemAudioRow" style="margin-bottom:12px;">
+      <label for="systemAudioInput"><b>Transcrever áudio do sistema:</b></label>
+      <input type="file" id="systemAudioInput" accept="audio/*">
+      <button id="systemAudioBtn">Enviar</button>
+    </div>
     <div class="setup-row">
       <label for="modeSelect"><b>Modo:</b></label>
       <select id="modeSelect">
@@ -73,25 +78,69 @@
     </div>
   </div>
   <script>
+  clearBtn.onclick = () => {
+    currentText = '';
+    transcription.textContent = '';
+    saveBtn.disabled = true;
+    copyTranscriptionBtn.disabled = true;
+    canSave = false;
+  };
+  // Declaração das variáveis DOM (no topo)
+  const systemAudioInput = document.getElementById('systemAudioInput');
+  const systemAudioBtn = document.getElementById('systemAudioBtn');
+  const systemAudioRow = document.getElementById('systemAudioRow');
 
-  // ...existing code...
-  // (declaracao das variaveis DOM)
-  // Handlers universais para botões
-  // (declarar handlers APÓS as variáveis DOM)
-  const transcription = document.getElementById('transcription');
-  const startBtn = document.getElementById('startBtn');
-  const stopBtn = document.getElementById('stopBtn');
-  const saveBtn = document.getElementById('saveBtn');
-  const clearBtn = document.getElementById('clearBtn');
-  const copyTranscriptionBtn = document.getElementById('copyTranscriptionBtn');
-  const recordingIndicator = document.getElementById('recordingIndicator');
-  const recordingList = document.getElementById('recordingList');
-  const modeSelect = document.getElementById('modeSelect');
-  const langSelect = document.getElementById('langSelect');
-  const apiKeyContainer = document.getElementById('apiKeyContainer');
-  const apiKeyInput = document.getElementById('apiKeyInput');
-  const saveApiKeyBtn = document.getElementById('saveApiKeyBtn');
-  const apiKeyStatus = document.getElementById('apiKeyStatus');
+  // Mostrar opção apenas no modo Whisper
+  function updateSystemAudioRow() {
+    systemAudioRow.style.display = modeSelect.value === 'whisper' ? '' : 'none';
+  }
+  modeSelect.addEventListener('change', updateSystemAudioRow);
+  // Se houver API Key salva, define modo Whisper como padrão
+  if (localStorage.getItem('whisperApiKey')) {
+    modeSelect.value = 'whisper';
+  }
+  updateSystemAudioRow();
+
+  systemAudioBtn.onclick = async () => {
+    const file = systemAudioInput.files[0];
+    if (!file) {
+      transcription.textContent = 'Selecione um arquivo de áudio.';
+      return;
+    }
+    if (!getApiKey()) {
+      transcription.textContent = 'Insira sua chave da OpenAI para usar o Whisper.';
+      return;
+    }
+    transcription.textContent = 'Processando áudio do sistema...';
+    const formData = new FormData();
+    formData.append('file', file, file.name);
+    formData.append('model', 'whisper-1');
+    formData.append('language', langSelect.value === 'pt' ? 'pt' : 'en');
+    formData.append('response_format', 'text');
+    try {
+      const response = await fetch('https://api.openai.com/v1/audio/transcriptions', {
+        method: 'POST',
+        headers: {
+          'Authorization': 'Bearer ' + getApiKey()
+        },
+        body: formData
+      });
+      if (!response.ok) throw new Error('Erro na API Whisper');
+      const text = await response.text();
+      currentText = text.trim();
+      transcription.textContent = currentText;
+      canSave = currentText.length > 0;
+      saveBtn.disabled = !canSave;
+      copyTranscriptionBtn.disabled = !canSave;
+      // Salva automaticamente como backup
+      if (canSave && currentText.trim().length > 0 && currentText.trim() !== lastBackupText) {
+        saveTranscription(currentText.trim());
+      }
+    } catch (err) {
+      transcription.textContent = 'Erro na transcrição: ' + err.message;
+    }
+  };
+
 
   function updateWhisperInfo() {
     const isWhisper = modeSelect.value === 'whisper';
@@ -372,8 +421,32 @@
     // --- Whisper API ---
     let mediaRecorder, audioChunks = [];
     function setupWhisperRecognition() {
+  let previewRecognition;
       let whisperTimer;
       startBtn.onclick = async () => {
+        // Preview local
+        if ('webkitSpeechRecognition' in window || 'SpeechRecognition' in window) {
+          const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+          previewRecognition = new SpeechRecognition();
+          previewRecognition.lang = getLangCode();
+          previewRecognition.continuous = true;
+          previewRecognition.interimResults = true;
+          previewRecognition.onresult = (event) => {
+            let interimTranscript = '';
+            let finalTranscript = '';
+            for (let i = 0; i < event.results.length; ++i) {
+              if (event.results[i].isFinal) {
+                finalTranscript += event.results[i][0].transcript;
+              } else {
+                interimTranscript += event.results[i][0].transcript;
+              }
+            }
+            transcription.textContent = (finalTranscript + interimTranscript).trim();
+          };
+          previewRecognition.onerror = () => {};
+          previewRecognition.onend = () => {};
+          try { previewRecognition.start(); } catch(e) {}
+        }
         if (!getApiKey()) {
           transcription.textContent = 'Insira sua chave da OpenAI para usar o Whisper.';
           return;
@@ -386,6 +459,9 @@
             audioChunks.push(e.data);
           };
           mediaRecorder.onstop = async () => {
+            if (previewRecognition) {
+              try { previewRecognition.stop(); } catch(e) {}
+            }
             transcription.textContent = 'Processando áudio...';
             const audioBlob = new Blob(audioChunks, { type: 'audio/webm' });
             const formData = new FormData();

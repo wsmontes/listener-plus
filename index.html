@@ -1,0 +1,481 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Transcrição de Áudio - iPhone</title>
+  <style>
+    body { font-family: Arial, sans-serif; background: #f7f7f7; margin: 0; padding: 0; }
+    .container { max-width: 600px; margin: 24px auto; background: #fff; border-radius: 12px; box-shadow: 0 2px 12px rgba(0,0,0,0.12); padding: 24px; }
+    h1 { text-align: center; color: #333; margin-bottom: 8px; }
+    #transcription { min-height: 120px; background: #f0f4fa; border-radius: 8px; padding: 16px; font-size: 1.15em; color: #222; margin-bottom: 12px; word-break: break-word; }
+    .controls { display: flex; gap: 12px; margin-bottom: 16px; }
+    .controls button { flex: 1; padding: 12px; font-size: 1em; border: none; border-radius: 8px; background: #007aff; color: #fff; cursor: pointer; }
+    .controls button:disabled { background: #aaa; }
+    .info { font-size: 0.95em; color: #555; text-align: center; margin-top: 12px; }
+    .recordings { margin-top: 24px; }
+    .recordings-title { font-weight: bold; color: #333; margin-bottom: 8px; }
+    .recording-list { list-style: none; padding: 0; margin: 0; }
+    .recording-item { background: #f8f8f8; border-radius: 8px; margin-bottom: 10px; padding: 12px; display: flex; flex-direction: column; gap: 8px; box-shadow: 0 1px 4px rgba(0,0,0,0.04); }
+    .recording-actions { display: flex; gap: 8px; }
+    .recording-actions button { flex: 1; padding: 8px; font-size: 0.95em; border: none; border-radius: 6px; background: #007aff; color: #fff; cursor: pointer; }
+    .recording-actions button.delete { background: #ff3b30; }
+    .recording-actions button.copy { background: #34c759; }
+    .recording-actions button.export { background: #5856d6; }
+    @media (max-width: 600px) {
+      .container { max-width: 98vw; padding: 8vw 2vw; }
+      #transcription { font-size: 1em; }
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>Anotador de Áudio</h1>
+    <div id="transcription">Clique em "Iniciar" e fale para transcrever.</div>
+    <div id="recordingIndicator" style="display:none;color:#007aff;font-weight:bold;text-align:center;margin-bottom:8px;">● Gravando...</div>
+    <div class="controls">
+      <button id="startBtn">Iniciar</button>
+      <button id="stopBtn" disabled>Parar</button>
+      <button id="saveBtn" disabled>Salvar</button>
+      <button id="copyTranscriptionBtn" disabled>Copiar</button>
+      <button id="clearBtn">Limpar</button>
+    </div>
+    <div class="setup-row">
+      <label for="modeSelect"><b>Modo:</b></label>
+      <select id="modeSelect">
+        <option value="local">Reconhecimento Local</option>
+        <option value="whisper">Whisper API</option>
+      </select>
+    </div>
+    <div class="setup-row">
+      <label for="langSelect"><b>Idioma:</b></label>
+      <select id="langSelect">
+        <option value="pt">Português</option>
+        <option value="en">Inglês</option>
+      </select>
+    </div>
+    <div id="apiKeyContainer" class="setup-row" style="display:none;">
+      <label for="apiKeyInput"><b>API Key Whisper:</b></label>
+      <input type="password" id="apiKeyInput" placeholder="Cole sua chave da OpenAI aqui">
+      <button id="saveApiKeyBtn">Salvar</button>
+      <span id="apiKeyStatus"></span>
+      <div style="font-size:0.95em;color:#555;margin-top:4px;">Obtenha sua chave em <a href="https://platform.openai.com/api-keys" target="_blank">platform.openai.com/api-keys</a></div>
+    </div>
+    <div id="whisperInfo" style="display:none;font-size:0.97em;color:#007aff;margin-bottom:10px;">
+      <b>Modo Whisper:</b> O áudio será enviado para a OpenAI para transcrição. Sua chave é armazenada apenas no seu navegador.<br>
+      <span id="whisperLangInfo"></span>
+    </div>
+    <div class="info">Funciona melhor no Safari do iPhone.<br>Permita o acesso ao microfone.</div>
+    <div class="ios-tips" style="font-size:0.95em;color:#007aff;text-align:center;margin-top:8px;"></div>
+    <div class="recordings">
+      <div class="recordings-title">Gravações salvas</div>
+      <ul id="recordingList" class="recording-list"></ul>
+    </div>
+  </div>
+  <script>
+
+  // ...existing code...
+  // (declaracao das variaveis DOM)
+  // Handlers universais para botões
+  // (declarar handlers APÓS as variáveis DOM)
+  const transcription = document.getElementById('transcription');
+  const startBtn = document.getElementById('startBtn');
+  const stopBtn = document.getElementById('stopBtn');
+  const saveBtn = document.getElementById('saveBtn');
+  const clearBtn = document.getElementById('clearBtn');
+  const copyTranscriptionBtn = document.getElementById('copyTranscriptionBtn');
+  const recordingIndicator = document.getElementById('recordingIndicator');
+  const recordingList = document.getElementById('recordingList');
+  const modeSelect = document.getElementById('modeSelect');
+  const langSelect = document.getElementById('langSelect');
+  const apiKeyContainer = document.getElementById('apiKeyContainer');
+  const apiKeyInput = document.getElementById('apiKeyInput');
+  const saveApiKeyBtn = document.getElementById('saveApiKeyBtn');
+  const apiKeyStatus = document.getElementById('apiKeyStatus');
+
+  function updateWhisperInfo() {
+    const isWhisper = modeSelect.value === 'whisper';
+    document.getElementById('whisperInfo').style.display = isWhisper ? '' : 'none';
+    if (isWhisper) {
+      document.getElementById('whisperLangInfo').textContent = langSelect.value === 'pt'
+        ? 'Especializado para português brasileiro.'
+        : 'Especializado para inglês.';
+    }
+  }
+  // Persistência da API Key
+  function getApiKey() {
+    return localStorage.getItem('whisperApiKey') || '';
+  }
+  function setApiKey(key) {
+    localStorage.setItem('whisperApiKey', key);
+  }
+  function updateApiKeyUI() {
+    const key = getApiKey();
+    apiKeyInput.value = key;
+    apiKeyStatus.textContent = key ? 'Chave salva.' : '';
+  }
+  saveApiKeyBtn.onclick = () => {
+    setApiKey(apiKeyInput.value.trim());
+    updateApiKeyUI();
+  };
+  updateApiKeyUI();
+
+  // Setup especializado por idioma
+  function getLangCode() {
+    return langSelect.value === 'pt' ? 'pt-BR' : 'en-US';
+  }
+
+  // Handlers para modo/idioma
+  function updateWhisperInfo() {
+    const isWhisper = modeSelect.value === 'whisper';
+    document.getElementById('whisperInfo').style.display = isWhisper ? '' : 'none';
+    apiKeyContainer.style.display = isWhisper ? '' : 'none';
+    if (isWhisper) {
+      document.getElementById('whisperLangInfo').textContent = langSelect.value === 'pt'
+        ? 'Especializado para português brasileiro.'
+        : 'Especializado para inglês.';
+    }
+  }
+  modeSelect.addEventListener('change', () => {
+    updateWhisperInfo();
+    setupRecognition();
+  });
+  langSelect.addEventListener('change', () => {
+    updateWhisperInfo();
+    setupRecognition();
+  });
+  updateWhisperInfo();
+  // ...existing code...
+    let recognition;
+    let listening = false;
+    let currentText = '';
+  let lastBackupText = '';
+    let canSave = false;
+
+    // IndexedDB helpers
+    const DB_NAME = 'transcricoesDB';
+    const STORE_NAME = 'transcricoes';
+    let db;
+
+    function openDB() {
+      return new Promise((resolve, reject) => {
+        const request = indexedDB.open(DB_NAME, 1);
+        request.onupgradeneeded = function(e) {
+          db = e.target.result;
+          if (!db.objectStoreNames.contains(STORE_NAME)) {
+            db.createObjectStore(STORE_NAME, { keyPath: 'id' });
+          }
+        };
+        request.onsuccess = function(e) {
+          db = e.target.result;
+          resolve(db);
+        };
+        request.onerror = function(e) {
+          reject(e);
+        };
+      });
+    }
+
+    function saveTranscription(text) {
+  // Evita salvar duplicado
+  if (text === lastBackupText) return;
+  lastBackupText = text;
+      if (!db) return;
+      const tx = db.transaction(STORE_NAME, 'readwrite');
+      const store = tx.objectStore(STORE_NAME);
+      const id = Date.now();
+      store.put({ id, text, date: new Date().toLocaleString() });
+      tx.oncomplete = () => {
+        loadTranscriptions();
+      };
+    }
+
+    function loadTranscriptions() {
+      if (!db) return;
+      const tx = db.transaction(STORE_NAME, 'readonly');
+      const store = tx.objectStore(STORE_NAME);
+      const request = store.getAll();
+      request.onsuccess = function() {
+        renderTranscriptions(request.result);
+      };
+    }
+
+    function renderTranscriptions(list) {
+      recordingList.innerHTML = '';
+      if (!list.length) {
+        recordingList.innerHTML = '<li style="color:#888;text-align:center;">Nenhuma gravação salva.</li>';
+        return;
+      }
+      list.sort((a,b) => b.id - a.id);
+      list.forEach(item => {
+        const li = document.createElement('li');
+        li.className = 'recording-item';
+        li.innerHTML = `
+          <div><b>${item.date}</b></div>
+          <div class="recording-text" style="white-space:pre-line;">${item.text}</div>
+          <div class="recording-actions">
+            <button class="view">Visualizar</button>
+            <button class="copy">Copiar</button>
+            <button class="export">Exportar TXT</button>
+            <button class="delete">Apagar</button>
+          </div>
+        `;
+        // Actions
+        li.querySelector('.view').onclick = () => {
+          transcription.textContent = item.text;
+        };
+        li.querySelector('.copy').onclick = () => {
+          navigator.clipboard.writeText(item.text);
+        };
+        li.querySelector('.export').onclick = () => {
+          const blob = new Blob([item.text], { type: 'text/plain' });
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.href = url;
+          a.download = `transcricao-${item.id}.txt`;
+          document.body.appendChild(a);
+          a.click();
+          setTimeout(() => {
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+          }, 100);
+        };
+        li.querySelector('.delete').onclick = () => {
+          deleteTranscription(item.id);
+        };
+        recordingList.appendChild(li);
+      });
+    }
+
+    function deleteTranscription(id) {
+      if (!db) return;
+      const tx = db.transaction(STORE_NAME, 'readwrite');
+      const store = tx.objectStore(STORE_NAME);
+      store.delete(id);
+      tx.oncomplete = () => {
+        loadTranscriptions();
+      };
+    }
+
+    // Inicializar DB e carregar gravações
+    openDB().then(() => loadTranscriptions());
+
+    function supportsSpeechRecognition() {
+      return 'webkitSpeechRecognition' in window || 'SpeechRecognition' in window;
+    }
+
+    function showPermissionError() {
+      transcription.textContent = 'Permissão de microfone negada. Ative em Ajustes > Safari > Microfone.';
+      startBtn.disabled = true;
+      stopBtn.disabled = true;
+      saveBtn.disabled = true;
+    }
+
+    // --- Reconhecimento Local ---
+    function setupLocalRecognition() {
+      const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+      recognition = new SpeechRecognition();
+      recognition.lang = getLangCode();
+      recognition.continuous = true;
+      recognition.interimResults = true;
+
+      recognition.onresult = (event) => {
+        let interimTranscript = '';
+        let finalTranscript = '';
+        for (let i = 0; i < event.results.length; ++i) {
+          if (event.results[i].isFinal) {
+            finalTranscript += event.results[i][0].transcript;
+          } else {
+            interimTranscript += event.results[i][0].transcript;
+          }
+        }
+        if (finalTranscript && !finalTranscript.trim().endsWith('.')) {
+          finalTranscript = finalTranscript.trim() + '. ';
+        }
+        currentText = (finalTranscript + interimTranscript).trim();
+        transcription.textContent = currentText;
+        canSave = finalTranscript.trim().length > 0;
+        saveBtn.disabled = !canSave;
+        copyTranscriptionBtn.disabled = currentText.length === 0;
+      };
+
+      recognition.onerror = (event) => {
+        if (event.error === 'not-allowed' || event.error === 'denied') {
+          showPermissionError();
+        } else if (event.error === 'no-speech') {
+          transcription.textContent = 'Nenhuma fala detectada. Tente novamente.';
+          setTimeout(() => { if (!listening) recognition.start(); }, 1200);
+        } else if (event.error === 'audio-capture') {
+          transcription.textContent = 'Microfone não encontrado. Verifique as permissões.';
+        } else {
+          transcription.textContent = 'Erro: ' + event.error;
+        }
+        listening = false;
+        startBtn.disabled = false;
+        stopBtn.disabled = true;
+        saveBtn.disabled = true;
+        recordingIndicator.style.display = 'none';
+      };
+
+      recognition.onend = () => {
+        listening = false;
+        startBtn.disabled = false;
+        stopBtn.disabled = true;
+        saveBtn.disabled = !canSave;
+        // Salva automaticamente como backup, se não vazio e não duplicado
+        if (canSave && currentText.trim().length > 0 && currentText.trim() !== lastBackupText) {
+          saveTranscription(currentText.trim());
+        }
+        // Reinicia automaticamente se o usuário não clicou em Parar
+        if (listening) {
+          setTimeout(() => {
+            try {
+              recognition.start();
+              startBtn.disabled = true;
+              stopBtn.disabled = false;
+              transcription.textContent = 'Ouvindo...';
+              recordingIndicator.style.display = '';
+            } catch (e) {
+              transcription.textContent = 'Erro ao reiniciar reconhecimento.';
+            }
+          }, 500);
+        }
+      };
+
+      startBtn.onclick = () => {
+        try {
+          recognition.lang = getLangCode();
+          recognition.start();
+          listening = true;
+          startBtn.disabled = true;
+          stopBtn.disabled = false;
+          saveBtn.disabled = true;
+          copyTranscriptionBtn.disabled = true;
+          transcription.textContent = 'Ouvindo...';
+          recordingIndicator.style.display = '';
+          currentText = '';
+        } catch (e) {
+          transcription.textContent = 'Erro ao iniciar reconhecimento. Verifique permissões.';
+        }
+      };
+
+      stopBtn.onclick = () => {
+        recognition.stop();
+        listening = false;
+        startBtn.disabled = false;
+        stopBtn.disabled = true;
+        saveBtn.disabled = !canSave;
+        recordingIndicator.style.display = 'none';
+      };
+    }
+
+    // --- Whisper API ---
+    let mediaRecorder, audioChunks = [];
+    function setupWhisperRecognition() {
+      let whisperTimer;
+      startBtn.onclick = async () => {
+        if (!getApiKey()) {
+          transcription.textContent = 'Insira sua chave da OpenAI para usar o Whisper.';
+          return;
+        }
+        try {
+          const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+          mediaRecorder = new MediaRecorder(stream);
+          audioChunks = [];
+          mediaRecorder.ondataavailable = e => {
+            audioChunks.push(e.data);
+          };
+          mediaRecorder.onstop = async () => {
+            transcription.textContent = 'Processando áudio...';
+            const audioBlob = new Blob(audioChunks, { type: 'audio/webm' });
+            const formData = new FormData();
+            formData.append('file', audioBlob, 'audio.webm');
+            formData.append('model', 'whisper-1');
+            formData.append('language', langSelect.value === 'pt' ? 'pt' : 'en');
+            formData.append('response_format', 'text');
+            try {
+              const response = await fetch('https://api.openai.com/v1/audio/transcriptions', {
+                method: 'POST',
+                headers: {
+                  'Authorization': 'Bearer ' + getApiKey()
+                },
+                body: formData
+              });
+              if (!response.ok) throw new Error('Erro na API Whisper');
+              const text = await response.text();
+              currentText = text.trim();
+              transcription.textContent = currentText;
+              canSave = currentText.length > 0;
+              saveBtn.disabled = !canSave;
+              copyTranscriptionBtn.disabled = !canSave;
+              // Salva automaticamente como backup após transcrição
+              if (canSave && currentText.trim().length > 0 && currentText.trim() !== lastBackupText) {
+                saveTranscription(currentText.trim());
+              }
+              // Se ainda estiver ouvindo, reinicia gravação para próxima parte
+              if (listening) {
+                setTimeout(() => startBtn.onclick(), 1000);
+              }
+            } catch (err) {
+              transcription.textContent = 'Erro na transcrição: ' + err.message;
+            }
+          };
+          mediaRecorder.start();
+          // Limite de 29 minutos por chunk (Whisper API aceita até ~30min)
+          whisperTimer = setTimeout(() => {
+            if (mediaRecorder && mediaRecorder.state === 'recording') {
+              mediaRecorder.stop();
+            }
+          }, 29 * 60 * 1000);
+          listening = true;
+          startBtn.disabled = true;
+          stopBtn.disabled = false;
+          saveBtn.disabled = true;
+          copyTranscriptionBtn.disabled = true;
+          transcription.textContent = 'Gravando áudio...';
+          recordingIndicator.style.display = '';
+        } catch (e) {
+          transcription.textContent = 'Erro ao acessar microfone.';
+        }
+      };
+      stopBtn.onclick = () => {
+        if (whisperTimer) clearTimeout(whisperTimer);
+        if (mediaRecorder && mediaRecorder.state === 'recording') {
+          mediaRecorder.stop();
+        }
+        listening = false;
+        startBtn.disabled = false;
+        stopBtn.disabled = true;
+        saveBtn.disabled = !canSave;
+        recordingIndicator.style.display = 'none';
+      };
+    }
+
+    // Setup dinâmico conforme modo selecionado
+    function setupRecognition() {
+      startBtn.disabled = false;
+      stopBtn.disabled = true;
+      saveBtn.disabled = true;
+      copyTranscriptionBtn.disabled = true;
+      transcription.textContent = 'Clique em "Iniciar" e fale para transcrever.';
+      if (modeSelect.value === 'local') {
+        setupLocalRecognition();
+      } else {
+        setupWhisperRecognition();
+      }
+    }
+    modeSelect.onchange = setupRecognition;
+    langSelect.onchange = setupRecognition;
+    // Inicialização
+    if (!supportsSpeechRecognition() && modeSelect.value === 'local') {
+      transcription.textContent = 'Seu navegador não suporta reconhecimento de voz.';
+      startBtn.disabled = true;
+      stopBtn.disabled = true;
+      saveBtn.disabled = true;
+    } else {
+      setupRecognition();
+    }
+    // ...existing code...
+  </script>
+</body>
+</html>
